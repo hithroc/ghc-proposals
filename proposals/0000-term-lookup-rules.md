@@ -167,12 +167,19 @@ Unlike `-XDataKinds`, we do *not* introduce a term-level counterpart for the
 `^`) would further increase the syntactic complexity of Haskell.
 
 Instead, we propose to deprecate the `'` syntax of `-XDataKinds` and introduce
-namespace-qualified imports instead (guarded behind `-XExplicitNamespaces`) for
-compatibility with modules that use punning:
+namespace-qualified imports and module aliases (guarded behind `-XExplicitNamespaces`
+and a new extension `-XModuleAliases`) for compatibility with modules that use punning:
 
 ```
+module M as ModuleAlias, type as MT, type as MD where
+
 import Data.Proxy type qualified as T   -- import only the type namespace
 import Data.Proxy data qualified as D   -- import only the data namespace
+
+data T = T
+
+f :: T.Proxy MT.T
+f = D.Proxy
 ```
 
 To avoid hard to grasp, context-dependent code, we introduce `-Wpuns` and
@@ -205,136 +212,166 @@ If we handle `(~)` now, the answer is "no" from the get go.
 
 ## Proposed Change Specification
 
-* The name lookup rules are extended: when looking up a term-level identifier
-  fails, look for a type-level identifier as fallback.
+1. The name lookup rules are extended: when looking up a term-level identifier
+   fails, look for a type-level identifier as fallback.
 
-* To disambiguate the namespaces of identifiers from modules that use punning,
-  the `-XExplicitNamespaces` extension is extended with new syntax:
+2. `-XModuleAliases` extension is introduced that adds a syntax for module aliasing:
+   ```
+   module  -> module modid [exports] where body
+            | body
+   ```
+   is changed to
+   ```
+   module  -> module modid [aliases] [exports] where body
+            | body
 
-  ```
-  impdecl   -> import [qualified] modid [as modid] [impspec]
-  ```
-  is changed to
-  ```
-  impdecl   -> import [qualified] modid [namespace] [as modid] [impspec]
+   aliases -> alias1, ..., aliasN
 
-  namespace -> data
-             | type
-  ```
-   * With `data` specified in the import, only identifiers belonging to the data namespace will be brought into the scope.
-   * With `type` specified in the import, only identifiers belonging to the type namespace will be brought into the scope.
+   alias   -> as modid
+   ```
 
-* Add a new module, `Data.BuiltInTypes`, imported by default unless the user
+3. To disambiguate the namespaces of identifiers from modules that use punning,
+   the `-XExplicitNamespaces` extension is extended with new syntax:
+
+   ```
+   impdecl   -> import [qualified] modid [as modid] [impspec]
+   ```
+   is changed to
+   ```
+   impdecl   -> import [qualified] modid [namespace] [as modid] [impspec]
+
+   namespace -> data
+              | type
+   ```
+   and module in alias syntax from `-XModuleAliases`
+   ```
+   alias  -> as modid
+   ```
+   is changed to
+   ```
+   alias  -> as modid
+           | as type modid
+           | as data modid
+   ```
+    1. With `data` specified in the import or alias, only identifiers belonging to the data namespace will be brought into the scope.
+
+    2. With `type` specified in the import or alias, only identifiers belonging to the type namespace will be brought into the scope.
+
+4. Add a new module, `Data.BuiltInTypes`, imported by default unless the user
   passes `-XNoImplicitBuiltInTypes` to the compiler.
 
-* In `GHC.Types`, the `[]` type constructor is renamed to `List`:
+5. In `GHC.Types`, the `[]` type constructor is renamed to `List`:
 
-  ```haskell
-  data List a = [] | a : List a
-  ```
+   ```haskell
+   data List a = [] | a : List a
+   ```
 
-  The new type constructor is re-exported from `Data.List`.
+   The new type constructor is re-exported from `Data.List`.
 
-  In `Data.BuiltInTypes`, introduce a backwards-compatibility type synonym:
+   In `Data.BuiltInTypes`, introduce a backwards-compatibility type synonym:
 
-  ```
-  type [] = List
-  ```
+   ```
+   type [] = List
+   ```
 
-  Users are also able to have their own declarations of `[]`.
+   Users are also able to have their own declarations of `[]`.
 
-* In `GHC.Tuple`, rename the tuple type constructors to `Tuple<N>` and add a
-  new type family, `Tuple`:
+6. In `GHC.Tuple`, rename the tuple type constructors to `Tuple<N>` and add a
+   new type family, `Tuple`:
 
-  ```haskell
-  data Tuple0 = ()
-  data Tuple1 a = MkTuple1 a
-  data Tuple2 a b = (a, b)
-  data Tuple3 a b c = (a, b, c)
-  data Tuple4 a b c d = (a, b, c, d)
-  {- ... -}
+   ```haskell
+   data Tuple0 = ()
+   data Tuple1 a = MkTuple1 a
+   data Tuple2 a b = (a, b)
+   data Tuple3 a b c = (a, b, c)
+   data Tuple4 a b c d = (a, b, c, d)
+   {- ... -}
 
-  type Unit = Tuple0
+   type Unit = Tuple0
 
-  type family Tuple xs where
-    Tuple [] = Tuple0
-    Tuple [a] = Tuple1 a
-    Tuple [a,b] = Tuple2 a b
-    Tuple [a,b,c] = Tuple3 a b c
-    {- ... -}
-  ```
+   type family Tuple xs where
+     Tuple [] = Tuple0
+     Tuple [a] = Tuple1 a
+     Tuple [a,b] = Tuple2 a b
+     Tuple [a,b,c] = Tuple3 a b c
+     {- ... -}
+   ```
 
-  Existing `Unit` in GHC.Tuple is renamed to `Tuple1` and `Unit` is now
-  aliased to the unit type instead.
+   Existing `Unit` in GHC.Tuple is renamed to `Tuple1` and `Unit` is now
+   aliased to the unit type instead.
 
-  The new type constructors and the type family are re-exported from `Data.Tuple`.
+   The new type constructors and the type family are re-exported from `Data.Tuple`.
 
-  In `Data.BuiltInTypes`, introduce backwards-compatibility type synonyms:
+   In `Data.BuiltInTypes`, introduce backwards-compatibility type synonyms:
 
-  ```haskell
-  type () = Tuple0
-  type (,) = Tuple2
-  type (,,) = Tuple3
-  type (,,,) = Tuple4
-  {- ... -}
-  ```
+   ```haskell
+   type () = Tuple0
+   type (,) = Tuple2
+   type (,,) = Tuple3
+   type (,,,) = Tuple4
+   {- ... -}
+   ```
 
-  Just as for lists, users are able to have their own declarations for `()`,
-  `(,)` and so on.
+   Just as for lists, users are able to have their own declarations for `()`,
+   `(,)` and so on.
 
-* Change `a ~ b` from special built-in syntax to a type operator, and
-  export it from `Data.BuiltInTypes` and `Data.Type.Equality`.
+7. Change `a ~ b` from special built-in syntax to a type operator, and
+   export it from `Data.BuiltInTypes` and `Data.Type.Equality`.
 
-* The type constructors `[]`, `()`, `(,)`, `(,,)`, and so on, are no longer
-  always in scope. Instead, they are looked up as any other constructor, which
-  by default coincides with today's behavior, as `Data.BuiltInTypes` is
-  imported by default.
+8. The type constructors `[]`, `()`, `(,)`, `(,,)`, and so on, are no longer
+   always in scope. Instead, they are looked up as any other constructor, which
+   by default coincides with today's behavior, as `Data.BuiltInTypes` is
+   imported by default.
 
-* The data constructors `[]`, `()`, `(,)`, `(,,)`, `(:)`, and so on, continue to be always in scope.
+9. The data constructors `[]`, `()`, `(,)`, `(,,)`, `(:)`, and so on, continue to be always in scope.
 
-* The `[a]` syntax is treated as follows:
+10. The `[a]` syntax is treated as follows:
 
-  1. Look up `[]` according to the scoping rules in the given context.
+    1. Look up `[]` according to the scoping rules in the given context.
 
-  2. If `[]` came from the type namespace, treat `[a]` as `[] a`.
+    2. If `[]` came from the type namespace, treat `[a]` as `[] a`.
 
-  3. If `[]` came from the data namespace, treat `[a]` as `a : []`.
+    3. If `[]` came from the data namespace, treat `[a]` as `a : []`.
 
-* The `(a,b)` syntax means `(,) a b`, where `(,)` is resolved according to the new rules.
-  This also applies to tuples of other arities.
+11. The `(a,b)` syntax means `(,) a b`, where `(,)` is resolved according to the new rules.
+    This also applies to tuples of other arities.
 
-* Deprecate the `'` syntax of `-XDataKinds`, reserving this syntax for Template
-  Haskell name quotation. Introduce a new warning, `-Wticked-promoted-constructors` which
-  warns of the usage of the syntax.
+12. Deprecate the `'` syntax of `-XDataKinds`, reserving this syntax for Template
+    Haskell name quotation. Introduce a new warning, `-Wticked-promoted-constructors` which
+    warns of the usage of the syntax.
 
-* Deprecate the `''` syntax in Template Haskell. Introduce a new warning,
-  `-Wdouble-tick-template-haskell` which warns about the usage of the syntax.
+13. Deprecate the `''` syntax in Template Haskell. Introduce a new warning,
+    `-Wdouble-tick-template-haskell` which warns about the usage of the syntax.
 
-* Introduce a new warning, `-Wpun-bindings`, triggered by any name
-  binding that would clash with another identifier if Haskell had a single
-  unified namespace.
+14. Introduce a new warning, `-Wpun-bindings`, triggered by any name
+    binding that would clash with another identifier if Haskell had a single
+    unified namespace.
 
-* Introduce a new warning, `-Wpuns`, triggered by using an identifier
-  that would be ambiguous or refer to another entity if Haskell had a single
-  unified namespace.
+15. Introduce a new warning, `-Wpuns`, triggered by using an identifier
+    that would be ambiguous or refer to another entity if Haskell had a single
+    unified namespace.
 
-* The deprecation strategy for the `'` syntax in `-XDataKinds` and `''` syntax in `-XTemplateHaskell` is the following:
-  * In the next release add `-Wpun-bindings`, `-Wpuns`, `-Wticked-promoted-constructors` and `-Wdouble-tick-template-haskell` to `-Wcompat` and deprecate `-Wunticked-promoted-constructors`.
-  * Three releases from after this proposal is implemented add all four warnings to `-Wall`.
-  * Seven releases from after this proposal is implemented deprecate the syntax and enable `-Wticked-promoted-constructors` and `-Wdouble-tick-template-haskell` by default.
-  * Fifteen releases from after this proposal is implemented remove the syntax.
+16. The deprecation strategy for the `'` syntax in `-XDataKinds` and `''` syntax in `-XTemplateHaskell` is the following:
 
-* Amend [GHC Proposal #65](https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0065-type-infix.rst)
-  to use `data` instead of `value`.
+    1. In the next release add `-Wpun-bindings`, `-Wpuns`, `-Wticked-promoted-constructors` and `-Wdouble-tick-template-haskell` to `-Wcompat` and deprecate `-Wunticked-promoted-constructors`.
 
-* Under `-XPatternSynonyms`, change the `pattern` qualifier in import and export lists to `data`.
-  Introduce `-Wpattern-namespace-qualifier` warning that warns when the
-  `pattern` namespace qualifier is used.  Add it to `-Wcompat`.
+    2. Three releases from after this proposal is implemented add all four warnings to `-Wall`.
 
-* Under `-XDataKinds`, in type signatures with an explicit `forall`, type
-  variable lookup falls back to term-level variable lookup, as is already the
-  case with type constructors. Type signatures with an implicit `forall` are
-  not affected to avoid breakage.
+    3. Seven releases from after this proposal is implemented deprecate the syntax and enable `-Wticked-promoted-constructors` and `-Wdouble-tick-template-haskell` by default.
+
+    4. Fifteen releases from after this proposal is implemented remove the syntax.
+
+17. Amend [GHC Proposal #65](https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0065-type-infix.rst)
+    to use `data` instead of `value`.
+
+18. Under `-XPatternSynonyms`, change the `pattern` qualifier in import and export lists to `data`.
+    Introduce `-Wpattern-namespace-qualifier` warning that warns when the
+    `pattern` namespace qualifier is used.  Add it to `-Wcompat`.
+
+19. Under `-XDataKinds`, in type signatures with an explicit `forall`, type
+    variable lookup falls back to term-level variable lookup, as is already the
+    case with type constructors. Type signatures with an implicit `forall` are
+    not affected to avoid breakage.
 
 ## Examples
 
@@ -550,21 +587,6 @@ data Bool -- no conflict
    f = T
    ```
 
- * You can self-import a module to have namespace qualifiers in it:
-
-   ```haskell
-   {-# LANGUAGE ExplicitNamespaces, DataKinds #-}
-   module M where
-
-   import M type as T
-   import M data as D
-
-   data T = T
-
-   foo :: Proxy D.T -> ()
-   foo = undefined
-   ```
-
 ## Costs and Drawbacks
 
 * This proposal introduces new syntax (namespace-qualified imports), but at the
@@ -602,6 +624,12 @@ data Bool -- no conflict
   the type namespace. While this is not as noisy as the previous alternative,
   context-dependent syntax is generally more confusing to read and it still
   conflicts with Template Haskell.
+
+* We could supress `-Wpuns` warning for certain kinds of punning. For instance: we could suppress it for `data Foo = Foo`
+  (when the data constructor is related to the type constructor, the most common use of punning) and let users disambiguate
+  with module aliases. Or we could suppress `-Wpuns` when punning is used for records `Foo { ... }`. However, this doesn't
+  help with backwards compatibility much, introduces unintuitive `-Wpuns` warning behavior (sometimes it warns about puns
+  and sometimes it doesn't)
 
 ## Unresolved Questions
 
